@@ -8,8 +8,8 @@ const INSTAGRAM_URL = 'https://www.instagram.com/claudiamelo/';
 
 // Dados do projeto no Supabase (Project Settings → API).
 // Enquanto estiver vazio, a agenda mostra o botão do WhatsApp no lugar.
-const SUPABASE_URL = 'https://bpchbhoroxixmwrstftr.supabase.co';      // ex.: 'https://abcdefgh.supabase.co'
-const SUPABASE_ANON_KEY = 'sb_publishable_siDKA-49gu_IK99aiDYK_Q_GKo9GV3M'; // chave "anon" / "publishable" (é pública, pode ficar aqui)
+const SUPABASE_URL = 'https://bpchbhoroxixmwrstftr.supabase.co'; // sem /rest/v1 no final
+const SUPABASE_ANON_KEY = ''; // chave "anon" / "publishable" (é pública, pode ficar aqui)
 
 // Regras da agenda (as mesmas estão no supabase.sql, função agendar)
 const SERVICOS = [
@@ -19,7 +19,7 @@ const SERVICOS = [
 ];
 const INTERVALO = 30; // minutos livres entre um atendimento e outro
 const PERIODOS = [['07:30', '10:30'], ['12:30', '18:00']];
-const DIAS_A_FRENTE = 7;
+const DIAS_A_FRENTE = 60; // até quantos dias à frente a cliente pode marcar (igual ao supabase.sql)
 const PASSO = 30; // de quanto em quanto tempo os horários começam
 // -------------------------------------------------------------------
 
@@ -141,16 +141,15 @@ const PASSO = 30; // de quanto em quanto tempo os horários começam
     const form = el('agForm');
     const erro = el('agErro');
     const sucesso = el('agSucesso');
-    const estado = { servico: null, dia: null, inicio: null, ocupados: [] };
+    const estado = { servico: null, dia: null, inicio: null, ocupados: [], mes: hoje().slice(0, 7) };
 
-    const diasDisponiveis = () => {
-      const base = hoje();
-      const dias = [];
-      for (let i = 0; i <= DIAS_A_FRENTE; i++) {
-        const ymd = somaDias(base, i);
-        if (new Date(`${ymd}T12:00:00Z`).getUTCDay() !== 0) dias.push(ymd);
-      }
-      return dias;
+    const ultimoDia = () => somaDias(hoje(), DIAS_A_FRENTE);
+    const ehDomingo = ymd => new Date(`${ymd}T12:00:00Z`).getUTCDay() === 0;
+    const dentroDoPrazo = ymd => ymd >= hoje() && ymd <= ultimoDia() && !ehDomingo(ymd);
+    const somaMes = (mes, n) => {
+      const d = new Date(`${mes}-01T12:00:00Z`);
+      d.setUTCMonth(d.getUTCMonth() + n);
+      return d.toISOString().slice(0, 7);
     };
 
     const horariosLivres = (ymd, servico) => {
@@ -190,15 +189,36 @@ const PASSO = 30; // de quanto em quanto tempo os horários começam
         boxDias.innerHTML = '<p class="booking__hint">Escolha um serviço primeiro.</p>';
         return;
       }
-      boxDias.innerHTML = diasDisponiveis().map(ymd => {
-        const cheio = horariosLivres(ymd, estado.servico).length === 0;
-        return `
-          <button type="button" class="day ${estado.dia === ymd ? 'is-on' : ''}" data-dia="${ymd}" ${cheio ? 'disabled' : ''}>
-            <small>${fmtDia(ymd, { weekday: 'short' }).replace('.', '')}</small>
-            <strong>${fmtDia(ymd, { day: '2-digit' })}</strong>
-            <small>${cheio ? 'lotado' : fmtDia(ymd, { month: 'short' }).replace('.', '')}</small>
-          </button>`;
-      }).join('');
+      // Calendário do mês, de domingo a sábado
+      const mes = estado.mes;
+      const [ano, m] = mes.split('-').map(Number);
+      const totalDias = new Date(Date.UTC(ano, m, 0)).getUTCDate();
+      const vazios = new Date(Date.UTC(ano, m - 1, 1)).getUTCDay();
+      const podeVoltar = mes > hoje().slice(0, 7);
+      const podeAvancar = somaMes(mes, 1) <= ultimoDia().slice(0, 7);
+      const titulo = new Date(`${mes}-01T12:00:00Z`).toLocaleDateString('pt-BR', { timeZone: 'UTC', month: 'long', year: 'numeric' });
+
+      let celulas = '<span class="cal__blank"></span>'.repeat(vazios);
+      for (let d = 1; d <= totalDias; d++) {
+        const ymd = `${mes}-${String(d).padStart(2, '0')}`;
+        const agendavel = dentroDoPrazo(ymd);
+        const cheio = agendavel && horariosLivres(ymd, estado.servico).length === 0;
+        const classes = ['cal__day', estado.dia === ymd && 'is-on', ymd === hoje() && 'is-today', cheio && 'is-full'].filter(Boolean).join(' ');
+        const dica = !agendavel ? (ehDomingo(ymd) ? 'Sem atendimento aos domingos' : 'Indisponível') : cheio ? 'Lotado' : 'Ver horários';
+        celulas += `<button type="button" class="${classes}" data-dia="${ymd}" title="${dica}" ${agendavel && !cheio ? '' : 'disabled'}>${d}</button>`;
+      }
+
+      boxDias.innerHTML = `
+        <div class="cal">
+          <div class="cal__head">
+            <button type="button" class="cal__nav" data-mes="-1" aria-label="Mês anterior" ${podeVoltar ? '' : 'disabled'}>‹</button>
+            <strong class="cal__title">${titulo}</strong>
+            <button type="button" class="cal__nav" data-mes="1" aria-label="Próximo mês" ${podeAvancar ? '' : 'disabled'}>›</button>
+          </div>
+          <div class="cal__week">${['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(w => `<span>${w}</span>`).join('')}</div>
+          <div class="cal__grid">${celulas}</div>
+          <p class="cal__legend"><span class="cal__dot"></span> dias com horário livre · agendamentos até ${fmtDia(ultimoDia(), { day: '2-digit', month: 'long' })}</p>
+        </div>`;
     };
 
     const renderHorarios = () => {
@@ -232,6 +252,12 @@ const PASSO = 30; // de quanto em quanto tempo os horários começam
       if (b) escolherServico(b.dataset.id);
     });
     boxDias.addEventListener('click', e => {
+      const nav = e.target.closest('[data-mes]');
+      if (nav) {
+        estado.mes = somaMes(estado.mes, Number(nav.dataset.mes));
+        renderDias();
+        return;
+      }
       const b = e.target.closest('[data-dia]');
       if (!b) return;
       estado.dia = b.dataset.dia;
